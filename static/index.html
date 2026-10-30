@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>English Tutor</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a2233; --muted:#5b6472;
+    --line:#e3e7ee; --accent:#2563eb; --warn-bg:#fff7e6; --warn-ink:#7a5200;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width:780px; margin:0 auto; padding:16px; display:flex; flex-direction:column; height:100vh; }
+  header { display:flex; align-items:center; gap:12px; padding:6px 4px 14px; }
+  header h1 { font-size:18px; margin:0 auto 0 0; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#c3c9d2; }
+  .dot.ok { background:#22c55e; } .dot.bad { background:#ef4444; }
+  select { padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; font-size:13px; }
+  #log { flex:1; overflow-y:auto; border:1px solid var(--line); border-radius:12px; background:var(--card);
+         padding:16px; box-shadow:0 1px 3px rgba(16,24,40,.06); }
+  .msg { margin:10px 0; max-width:86%; padding:10px 14px; border-radius:12px; white-space:pre-wrap;
+         line-height:1.5; font-size:14.5px; }
+  .me { margin-left:auto; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
+  .tutor { background:#eef2f7; border-bottom-left-radius:4px; }
+  .corr { background:var(--warn-bg); color:var(--warn-ink); border-left:3px solid #eab308;
+          border-bottom-left-radius:4px; font-size:13.5px; }
+  .hint { color:var(--muted); font-size:12.5px; text-align:center; margin:10px 0; }
+  .dock { display:flex; gap:8px; padding:12px 0 4px; align-items:center; }
+  #mic { width:46px; height:46px; border-radius:50%; border:none; background:var(--accent); color:#fff;
+         font-size:19px; cursor:pointer; flex:none; }
+  #mic.rec { background:#ef4444; animation:pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity:.5; } }
+  #text { flex:1; padding:11px 14px; border:1px solid var(--line); border-radius:10px; font-size:14px; }
+  #send { padding:11px 18px; border:none; border-radius:10px; background:var(--ink); color:#fff;
+          font-size:14px; cursor:pointer; }
+  #status { color:var(--muted); font-size:12.5px; min-height:18px; padding:2px 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>English Tutor</h1>
+    <span id="dot" class="dot" title="checking..."></span>
+    <select id="mode">
+      <option value="free">Free talk</option>
+      <option value="rephrase">Rephrase (how do I say X)</option>
+      <option value="drill">Drill (strict)</option>
+    </select>
+  </header>
+  <div id="log">
+    <div class="hint">Tap the mic and talk, or type below. The tutor answers first, then corrects gently.</div>
+  </div>
+  <div id="status"></div>
+  <div class="dock">
+    <button id="mic" title="Record">&#127908;</button>
+    <input id="text" placeholder="Type here, or record with the mic..." autocomplete="off">
+    <button id="send">Send</button>
+  </div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const log = $("log"), statusEl = $("status"), modeSel = $("mode"), micBtn = $("mic");
+let history = [];            // [{role, content}] — last 8 sent per request
+let mediaStream = null, recorder = null, chunks = [];
+
+fetch("/api/health").then(r => r.json()).then(h => {
+  $("dot").classList.add(h.ollama ? "ok" : "bad");
+  $("dot").title = JSON.stringify(h);
+}).catch(() => $("dot").classList.add("bad"));
+
+function bubble(cls, text) {
+  const d = document.createElement("div");
+  d.className = "msg " + cls;
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+function setBusy(s) { statusEl.textContent = s || ""; }
+
+// Split "Corrections:" block off the reply. Returns {main, corr}; corr "" when absent.
+function splitReply(reply) {
+  const m = reply.match(/\n?\s*corrections?\s*:?\s*\n?/i);
+  if (!m || m.index < 10) return { main: reply.trim(), corr: "" };
+  return { main: reply.slice(0, m.index).trim(), corr: reply.slice(m.index + m[0].length).trim() };
+}
+
+async function sendText(text) {
+  text = (text || "").trim();
+  if (!text) return;
+  bubble("me", text);
+  history.push({ role: "user", content: text });
+  setBusy("Thinking...");
+  try {
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, mode: modeSel.value, history: history.slice(-8) })
+    });
+    if (!r.ok) throw new Error("chat failed (" + r.status + ")");
+    const { reply } = await r.json();
+    history.push({ role: "assistant", content: reply });
+    const { main, corr } = splitReply(reply);
+    bubble("tutor", main || reply);
+    if (corr) bubble("corr", "Corrections\n" + corr);
+    setBusy("Synthesizing voice...");
+    const t = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: main || reply })
+    });
+    if (t.ok) {
+      const blob = await t.blob();
+      try { new Audio(URL.createObjectURL(blob)).play(); }
+      catch { setBusy("Audio blocked by the browser — reply shown as text."); }
+    } else {
+      setBusy("Voice unavailable (TTS failed) — reply shown as text.");
+    }
+  } catch (e) {
+    bubble("tutor", "Something went wrong: " + e.message);
+  }
+  setBusy("");
+}
+
+micBtn.onclick = async () => {
+  if (recorder && recorder.state === "recording") { recorder.stop(); return; }
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    setBusy("Mic permission denied — use the text box instead.");
+    return;
+  }
+  chunks = [];
+  recorder = new MediaRecorder(mediaStream);
+  recorder.ondataavailable = e => chunks.push(e.data);
+  recorder.onstop = async () => {
+    mediaStream.getTracks().forEach(t => t.stop());
+    micBtn.classList.remove("rec");
+    setBusy("Transcribing...");
+    try {
+      const blob = new Blob(chunks, { type: (chunks[0] && chunks[0].type) || "audio/webm" });
+      const fd = new FormData();
+      fd.append("file", blob, "speech.webm");
+      const r = await fetch("/api/transcribe", { method: "POST", body: fd });
+      if (!r.ok) throw new Error("transcribe failed (" + r.status + ")");
+      const { text } = await r.json();
+      if (!text) { setBusy("Heard nothing — try again a bit louder."); return; }
+      $("text").value = text;
+      sendText(text);
+    } catch (e) {
+      setBusy("Transcription failed: " + e.message);
+    }
+  };
+  recorder.start();
+  micBtn.classList.add("rec");
+  setBusy("Recording... tap the mic again to stop.");
+};
+
+$("send").onclick = () => { const t = $("text").value; $("text").value = ""; sendText(t); };
+$("text").addEventListener("keydown", e => {
+  if (e.key === "Enter") { const t = $("text").value; $("text").value = ""; sendText(t); }
+});
+</script>
+</body>
+</html>
