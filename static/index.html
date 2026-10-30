@@ -23,9 +23,27 @@
          line-height:1.5; font-size:14.5px; }
   .me { margin-left:auto; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
   .tutor { background:#eef2f7; border-bottom-left-radius:4px; }
+  .hint { color:var(--muted); font-size:12.5px; text-align:center; margin:10px 0; }
+  /* corrections panel (v2) */
   .corr { background:var(--warn-bg); color:var(--warn-ink); border-left:3px solid #eab308;
           border-bottom-left-radius:4px; font-size:13.5px; }
-  .hint { color:var(--muted); font-size:12.5px; text-align:center; margin:10px 0; }
+  .c-head { font-size:11.5px; text-transform:uppercase; letter-spacing:.4px; margin-bottom:6px; opacity:.85; }
+  .c-item { margin:9px 0; }
+  .c-tag { display:inline-block; font-size:10.5px; text-transform:uppercase; background:#f2e3b3;
+           color:#7a5200; border-radius:4px; padding:1px 6px; margin-right:6px; }
+  .c-line s { opacity:.75; }
+  .c-why { font-size:12.5px; opacity:.85; margin-top:2px; }
+  /* rephrase panel (v2) */
+  .rephr { background:#eaf3ff; border-left:3px solid var(--accent); border-bottom-left-radius:4px; }
+  .r-label { font-size:11px; text-transform:uppercase; letter-spacing:.4px; opacity:.7; margin:7px 0 2px; }
+  .r-label:first-child { margin-top:0; }
+  .r-main { font-size:15px; font-weight:600; }
+  .r-var { font-size:13.5px; }
+  .r-usage { font-size:12.5px; opacity:.8; margin-top:5px; font-style:italic; }
+  #rephr-hist { margin:6px 2px 0; font-size:12.5px; color:var(--muted); }
+  #rephr-hist summary { cursor:pointer; user-select:none; }
+  #rephr-hist .h-item { margin:5px 0 5px 12px; line-height:1.45; }
+  #rephr-hist .h-item b { color:var(--ink); font-weight:600; }
   .dock { display:flex; gap:8px; padding:12px 0 4px; align-items:center; }
   #mic { width:46px; height:46px; border-radius:50%; border:none; background:var(--accent); color:#fff;
          font-size:19px; cursor:pointer; flex:none; }
@@ -49,8 +67,12 @@
     </select>
   </header>
   <div id="log">
-    <div class="hint">Tap the mic and talk, or type below. The tutor answers first, then corrects gently.</div>
+    <div class="hint">Tap the mic and talk, or type below. The tutor answers first, then shows feedback under the reply.</div>
   </div>
+  <details id="rephr-hist" hidden>
+    <summary>Rephrase history (this session)</summary>
+    <div id="rephr-list"></div>
+  </details>
   <div id="status"></div>
   <div class="dock">
     <button id="mic" title="Record">&#127908;</button>
@@ -62,6 +84,7 @@
 const $ = id => document.getElementById(id);
 const log = $("log"), statusEl = $("status"), modeSel = $("mode"), micBtn = $("mic");
 let history = [];            // [{role, content}] — last 8 sent per request
+let rephrHistory = [];       // [{professional, usage}] — session only, newest first
 let mediaStream = null, recorder = null, chunks = [];
 
 fetch("/api/health").then(r => r.json()).then(h => {
@@ -79,16 +102,73 @@ function bubble(cls, text) {
 }
 function setBusy(s) { statusEl.textContent = s || ""; }
 
-// Split "Corrections:" block off the reply. Returns {main, corr}; corr "" when absent.
-function splitReply(reply) {
-  const m = reply.match(/\n?\s*corrections?\s*:?\s*\n?/i);
-  if (!m || m.index < 10) return { main: reply.trim(), corr: "" };
-  return { main: reply.slice(0, m.index).trim(), corr: reply.slice(m.index + m[0].length).trim() };
+// v2: tag-chipped corrections panel — {original, corrected, tag, explanation}[]
+function renderCorrections(corrections, mode) {
+  const panel = document.createElement("div");
+  panel.className = "msg corr";
+  const head = document.createElement("div");
+  head.className = "c-head";
+  head.textContent = (mode === "drill" ? "Drill feedback" : "Gentle feedback") +
+    " (" + corrections.length + (corrections.length === 1 ? " item)" : " items)");
+  panel.appendChild(head);
+  for (const c of corrections) {
+    const item = document.createElement("div"); item.className = "c-item";
+    const chip = document.createElement("span"); chip.className = "c-tag"; chip.textContent = c.tag || "other";
+    const line = document.createElement("div"); line.className = "c-line";
+    const was = document.createElement("s"); was.textContent = c.original;
+    const now = document.createElement("b"); now.textContent = c.corrected;
+    line.append(was, document.createTextNode(" \u2192 "), now);
+    const why = document.createElement("div"); why.className = "c-why"; why.textContent = c.explanation || "";
+    item.append(chip, line, why);
+    panel.appendChild(item);
+  }
+  log.appendChild(panel);
+  log.scrollTop = log.scrollHeight;
+}
+
+// v2: rephrase panel — {professional, variants[], usage}
+function renderRephrase(r) {
+  const panel = document.createElement("div");
+  panel.className = "msg rephr";
+  const label = document.createElement("div"); label.className = "r-label"; label.textContent = "Professional";
+  const main = document.createElement("div"); main.className = "r-main"; main.textContent = r.professional;
+  panel.append(label, main);
+  if (r.variants && r.variants.length) {
+    const vl = document.createElement("div"); vl.className = "r-label"; vl.textContent = "Variants";
+    panel.appendChild(vl);
+    for (const v of r.variants) {
+      const d = document.createElement("div"); d.className = "r-var"; d.textContent = "\u2022 " + v;
+      panel.appendChild(d);
+    }
+  }
+  if (r.usage) {
+    const u = document.createElement("div"); u.className = "r-usage"; u.textContent = r.usage;
+    panel.appendChild(u);
+  }
+  log.appendChild(panel);
+  log.scrollTop = log.scrollHeight;
+  rephrHistory.unshift({ professional: r.professional, usage: r.usage });
+  renderRephraseHistory();
+}
+
+function renderRephraseHistory() {
+  const box = $("rephr-hist"), list = $("rephr-list");
+  if (!rephrHistory.length) { box.hidden = true; return; }
+  box.hidden = false;
+  list.textContent = "";
+  for (const r of rephrHistory.slice(0, 5)) {
+    const d = document.createElement("div"); d.className = "h-item";
+    const b = document.createElement("b"); b.textContent = r.professional;
+    d.appendChild(b);
+    if (r.usage) d.appendChild(document.createTextNode(" — " + r.usage));
+    list.appendChild(d);
+  }
 }
 
 async function sendText(text) {
   text = (text || "").trim();
   if (!text) return;
+  const mode = modeSel.value;
   bubble("me", text);
   history.push({ role: "user", content: text });
   setBusy("Thinking...");
@@ -96,19 +176,32 @@ async function sendText(text) {
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, mode: modeSel.value, history: history.slice(-8) })
+      body: JSON.stringify({ text, mode, history: history.slice(-8) })
     });
     if (!r.ok) throw new Error("chat failed (" + r.status + ")");
-    const { reply } = await r.json();
+    const data = await r.json();
+    const { reply, corrections, rephrase } = data;
     history.push({ role: "assistant", content: reply });
-    const { main, corr } = splitReply(reply);
-    bubble("tutor", main || reply);
-    if (corr) bubble("corr", "Corrections\n" + corr);
+    bubble("tutor", reply);
+    if (corrections && corrections.length) renderCorrections(corrections, mode);
+    if (rephrase && rephrase.professional) renderRephrase(rephrase);
+    else if (mode === "rephrase") setBusy("The tutor missed the phrasing — send it again.");
+
+    // Spoken-audio rule: free = reply only; rephrase = reply + professional phrasing;
+    // drill = reply + up to 3 spoken corrections. Gentle mode never interrupts by voice.
+    let spoken = reply;
+    if (mode === "rephrase" && rephrase && rephrase.professional) spoken += " " + rephrase.professional;
+    if (mode === "drill" && corrections && corrections.length) {
+      spoken += " " + corrections.slice(0, 3)
+        .map(c => "Instead of \"" + c.original + "\", say \"" + c.corrected + "\".")
+        .join(" ");
+    }
+
     setBusy("Synthesizing voice...");
     const t = await fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: main || reply })
+      body: JSON.stringify({ text: spoken })
     });
     if (t.ok) {
       const blob = await t.blob();
@@ -161,6 +254,21 @@ $("send").onclick = () => { const t = $("text").value; $("text").value = ""; sen
 $("text").addEventListener("keydown", e => {
   if (e.key === "Enter") { const t = $("text").value; $("text").value = ""; sendText(t); }
 });
+
+// Test hook for headless UI checks: ?demo=drill|rephrase|free auto-runs one real turn.
+// Never activates without the explicit query param, so normal use is unaffected.
+const demo = new URLSearchParams(location.search).get("demo");
+if (demo) {
+  const lines = {
+    drill: "Yesterday I go to office and meet my client, he is very happy about the report we finish last week.",
+    rephrase: "Hindi ko maipaliwanag nang maayos yung iniisip ko.",
+    free: "Hi, I'd like to practice explaining a data pipeline to a client."
+  };
+  if (lines[demo]) {
+    modeSel.value = demo;
+    setTimeout(() => sendText(lines[demo]), 300);
+  }
+}
 </script>
 </body>
 </html>

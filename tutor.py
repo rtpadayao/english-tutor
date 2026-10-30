@@ -1,15 +1,24 @@
-"""Tutor brain: persona + modes -> Ollama chat.
+"""Tutor brain v2: persona + modes -> structured JSON via Ollama structured outputs.
 
-History is client-side in v1 (last 8 turns sent with each request).
-Server-side memory (Honcho + SQLite mistake tracker) is v3 — see the plan note.
+Response contract (enforced by Ollama's format=schema, defended again in parse()):
+  reply        natural conversational answer — this is what TTS reads
+  corrections  list of {original, corrected, tag, explanation}
+  rephrase     {professional, variants[], usage} — filled in rephrase mode, empty otherwise
+
+Correction tags are a fixed enum so the UI can chip them and v3 can aggregate them in the
+mistake tracker. History is client-side (last 8 turns per request); server-side memory
+(Honcho + SQLite) is v3 — see the plan note.
 """
 import json
 import os
 import time
 import urllib.request
 
+TAGS = ["grammar", "tense", "preposition", "article", "word-choice", "register", "spelling", "other"]
+
 PERSONA = """\
-You are a patient, encouraging English tutor in a one-on-one session.
+You are a patient, encouraging English tutor in a one-on-one session. You answer ONLY with
+the JSON object described by the schema (keys: reply, corrections, rephrase).
 
 Student profile:
 - Roy, a data/analytics consultant from the Philippines (first language Filipino/Tagalog).
@@ -17,30 +26,70 @@ Student profile:
   calls, presentations, and remote job interviews.
 - Target: American English — natural, but professional.
 
-How to respond:
-1. First respond naturally to what he said, like a good conversation partner would:
-   answer him, ask one short follow-up question, or give exactly what he asked for.
-2. Then, ONLY if he made real errors or clearly awkward phrasing, add a section whose
-   first line is exactly "Corrections:" and list AT MOST 3 items, each on its own line
-   as: said "..." -> say "..." — one short reason. Never invent errors; if there are
-   none, skip the section entirely.
-3. For a "how do I say X" request, lead with the professional phrasing, give 1-2 natural
-   variants, and one line on when to use each. Skip the Corrections section unless he
-   also asked to be corrected.
-4. Keep the conversational part SHORT: 2-6 sentences. Replies are read aloud by TTS.
-5. Explain in simple English. Use a short Tagalog gloss only if he asks for one.
-6. Encouragement over pedantry. Never correct grammar in the middle of a friendly
-   exchange beyond the limit above.
+Field rules:
+- reply: respond naturally to what he said, like a good conversation partner would — answer
+  him, ask one short follow-up question, or give exactly what he asked for. Keep it SHORT
+  (2-6 sentences): it is read aloud by TTS. Never mention corrections inside reply and never
+  use the word "Corrections" there.
+- corrections: ONLY real errors or clearly awkward phrasing he actually produced. Each item:
+  original = the exact phrase he said (short quote), corrected = the better version,
+  tag = one of grammar|tense|preposition|article|word-choice|register|spelling|other,
+  explanation = ONE short sentence with the reason.
+  * free mode: at most 3 items; if there are none, use an empty list.
+  * drill mode: list EVERY error, including small ones (articles, prepositions, tense,
+    word choice); still answer the content first, briefly, in reply.
+  * rephrase mode: usually an empty list unless he also asked to be corrected.
+- rephrase: when he asks "how do I say X", professional = the best professional phrasing,
+  variants = 1-2 natural alternatives, usage = one line on when to use it. In all other
+  modes use professional="", variants=[], usage="".
+
+Tone: encouragement over pedantry. Explanations in simple English; a short Tagalog gloss
+only if he asks for one.
 """
 
+# The server knows the mode; the model must be TOLD (v2 regression fix — without this the
+# model guesses from the message text and rephrase turns can come back as plain conversation).
 MODE_ADDONS = {
-    "free": "",
-    "rephrase": "\nRight now the student is asking how to say something. Lead with the phrasing.\n",
-    "drill": (
-        "\nDRILL MODE: this is a practice exercise, not conversation. Correct EVERY error, "
-        "including small ones (articles, prepositions, tense, word choice), each as "
-        'said "..." -> say "..." — short reason. Still answer the content first, briefly.\n'
+    "free": "\nACTIVE MODE: free conversation.",
+    "rephrase": (
+        "\nACTIVE MODE: rephrase — the student is asking HOW TO SAY something in professional "
+        "English. The rephrase object is REQUIRED for this turn: professional must be non-empty, "
+        "with 1-2 variants and a usage line. Keep reply to one short supportive sentence."
     ),
+    "drill": (
+        "\nACTIVE MODE: drill — a practice exercise, not conversation. List EVERY error, "
+        "including small ones (articles, prepositions, tense, word choice), in corrections."
+    ),
+}
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reply": {"type": "string"},
+        "corrections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "original": {"type": "string"},
+                    "corrected": {"type": "string"},
+                    "tag": {"type": "string", "enum": TAGS},
+                    "explanation": {"type": "string"},
+                },
+                "required": ["original", "corrected", "tag", "explanation"],
+            },
+        },
+        "rephrase": {
+            "type": "object",
+            "properties": {
+                "professional": {"type": "string"},
+                "variants": {"type": "array", "items": {"type": "string"}},
+                "usage": {"type": "string"},
+            },
+            "required": ["professional", "variants", "usage"],
+        },
+    },
+    "required": ["reply", "corrections", "rephrase"],
 }
 
 
@@ -56,8 +105,57 @@ def ollama_ok() -> bool:
         return False
 
 
-def reply(text: str, mode: str = "free", history: list[dict] | None = None) -> tuple[str, float]:
-    """Return (reply_text, elapsed_seconds) for one tutor turn."""
+def empty_rephrase() -> dict:
+    return {"professional": "", "variants": [], "usage": ""}
+
+
+def parse(content: str) -> dict:
+    """Validate the model's JSON; degrade gracefully to a plain reply if it ever breaks."""
+    try:
+        obj = json.loads(content)
+        if not isinstance(obj, dict):
+            raise ValueError("not an object")
+    except (json.JSONDecodeError, ValueError):
+        print(f"[tutor] non-JSON reply ({len(content)} chars) — falling back to plain text", flush=True)
+        if not content.strip():
+            raise RuntimeError("Ollama returned an empty reply")
+        return {"reply": content.strip(), "corrections": [], "rephrase": empty_rephrase()}
+
+    reply_text = str(obj.get("reply") or "").strip()
+    if not reply_text:
+        raise RuntimeError("Ollama returned an empty reply")
+
+    corrections = []
+    for item in obj.get("corrections") or []:
+        if not isinstance(item, dict):
+            continue
+        original = str(item.get("original") or "").strip()
+        corrected = str(item.get("corrected") or "").strip()
+        if not original or not corrected:
+            continue
+        tag = str(item.get("tag") or "other").strip().lower()
+        if tag not in TAGS:
+            tag = "other"
+        corrections.append({
+            "original": original,
+            "corrected": corrected,
+            "tag": tag,
+            "explanation": str(item.get("explanation") or "").strip(),
+        })
+
+    raw = obj.get("rephrase")
+    if not isinstance(raw, dict):
+        raw = {}
+    rephrase = {
+        "professional": str(raw.get("professional") or "").strip(),
+        "variants": [str(v).strip() for v in (raw.get("variants") or []) if str(v).strip()],
+        "usage": str(raw.get("usage") or "").strip(),
+    }
+    return {"reply": reply_text, "corrections": corrections, "rephrase": rephrase}
+
+
+def reply(text: str, mode: str = "free", history: list[dict] | None = None) -> tuple[dict, float]:
+    """Return ({reply, corrections, rephrase}, elapsed_seconds) for one tutor turn."""
     messages = [{"role": "system", "content": PERSONA + MODE_ADDONS.get(mode, "")}]
     for turn in (history or [])[-8:]:
         if turn.get("role") in ("user", "assistant") and turn.get("content"):
@@ -71,8 +169,11 @@ def reply(text: str, mode: str = "free", history: list[dict] | None = None) -> t
         # qwen3.5 is a thinking model: without this, tokens go to message.thinking
         # and content comes back empty (matches Honcho's no-THINKING setup for this model).
         "think": False,
+        # v2: structured outputs — Ollama constrains generation to SCHEMA.
+        "format": SCHEMA,
         "keep_alive": "30m",
-        "options": {"temperature": 0.6, "num_predict": 320},
+        # 420 (was 320): JSON keys/brackets add token overhead.
+        "options": {"temperature": 0.6, "num_predict": 420},
     }
     req = urllib.request.Request(
         _cfg("OLLAMA_URL", "http://localhost:11434") + "/api/chat",
@@ -83,6 +184,4 @@ def reply(text: str, mode: str = "free", history: list[dict] | None = None) -> t
     with urllib.request.urlopen(req, timeout=180) as resp:
         data = json.load(resp)
     content = (data.get("message") or {}).get("content", "").strip()
-    if not content:
-        raise RuntimeError("Ollama returned an empty reply")
-    return content, time.perf_counter() - start
+    return parse(content), time.perf_counter() - start

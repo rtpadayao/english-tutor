@@ -87,10 +87,15 @@ def chat(body: ChatIn):
     if body.mode not in ("free", "rephrase", "drill"):
         raise HTTPException(400, f"unknown mode: {body.mode}")
     try:
-        reply, elapsed = tutor.reply(body.text, body.mode, body.history)
+        result, elapsed = tutor.reply(body.text, body.mode, body.history)
     except Exception as exc:
         raise HTTPException(500, f"tutor failed: {exc}") from exc
-    return {"reply": reply, "elapsed_s": round(elapsed, 2)}
+    return {
+        "reply": result["reply"],
+        "corrections": result["corrections"],
+        "rephrase": result["rephrase"],
+        "elapsed_s": round(elapsed, 2),
+    }
 
 
 @app.post("/api/tts")
