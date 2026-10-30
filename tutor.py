@@ -62,6 +62,13 @@ MODE_ADDONS = {
         "\nACTIVE MODE: drill — a practice exercise, not conversation. List EVERY error, "
         "including small ones (articles, prepositions, tense, word choice), in corrections."
     ),
+    "roleplay": (
+        "\nACTIVE MODE: roleplay — a SCENE CARD follows at the end of this system message. "
+        "Stay IN CHARACTER as the counterpart it describes and run the practice scenario: "
+        "reply = your in-character turn (short, spoken aloud; react, object, or move the "
+        "scene forward as that persona would). corrections = as in free mode (max 3, real "
+        "errors only). rephrase = empty unless he asks how to say something."
+    ),
 }
 
 SCHEMA = {
@@ -223,9 +230,13 @@ def _retry_once(messages: list[dict], text: str, hint: str) -> dict:
     return parse(ollama_chat(retry_messages, SCHEMA, num_predict=420, temperature=0.3))
 
 
-def reply(text: str, mode: str = "free", history: list[dict] | None = None) -> tuple[dict, float]:
+def reply(text: str, mode: str = "free", history: list[dict] | None = None,
+          playbook_card: str | None = None) -> tuple[dict, float]:
     """Return ({reply, corrections, rephrase}, elapsed_seconds) for one tutor turn."""
-    messages = [{"role": "system", "content": PERSONA + MODE_ADDONS.get(mode, "")}]
+    system = PERSONA + MODE_ADDONS.get(mode, "")
+    if mode == "roleplay" and playbook_card:
+        system += "\n\nSCENE CARD:\n" + playbook_card
+    messages = [{"role": "system", "content": system}]
     for turn in (history or [])[-8:]:
         if turn.get("role") in ("user", "assistant") and turn.get("content"):
             messages.append({"role": turn["role"], "content": str(turn["content"])[:2000]})

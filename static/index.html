@@ -17,6 +17,8 @@
   .dot { width:10px; height:10px; border-radius:50%; background:#c3c9d2; }
   .dot.ok { background:#22c55e; } .dot.bad { background:#ef4444; }
   select { padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; font-size:13px; }
+  #playbook { max-width:240px; }
+  header h1 { flex:none; }
   #log { flex:1; overflow-y:auto; border:1px solid var(--line); border-radius:12px; background:var(--card);
          padding:16px; box-shadow:0 1px 3px rgba(16,24,40,.06); }
   .msg { margin:10px 0; max-width:86%; padding:10px 14px; border-radius:12px; white-space:pre-wrap;
@@ -55,6 +57,27 @@
   #digest-btn { padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:#fff;
                 color:var(--ink); font-size:13px; cursor:pointer; }
   #digest-btn:hover { background:#f0f4f8; }
+  /* playbooks + session flow (v4) */
+  #session-btn { padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:#fff;
+                 color:var(--ink); font-size:13px; cursor:pointer; }
+  #session-btn:hover { background:#f0f4f8; }
+  #session-btn.active { background:#eef8ef; border-color:#22a06b; }
+  #stage { margin:8px 0 0; border:1px solid var(--line); border-radius:12px; background:var(--card);
+           padding:12px 14px; box-shadow:0 1px 3px rgba(16,24,40,.06); font-size:13.5px; }
+  #stage .s-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+  #stage .s-title { font-size:11.5px; text-transform:uppercase; letter-spacing:.4px;
+                    color:var(--muted); font-weight:600; }
+  #stage .s-note { color:var(--muted); font-size:12.5px; }
+  #stage .s-item { margin:6px 0; line-height:1.45; }
+  #stage .s-btns { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+  #stage button { padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:#fff;
+                  color:var(--ink); font-size:12.5px; cursor:pointer; }
+  #stage button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  #stage button.rec { background:#ef4444; color:#fff; border-color:#ef4444; animation:pulse 1.2s infinite; }
+  #stage .s-verdict { font-weight:600; }
+  #stage .s-verdict.hit { color:#15803d; }
+  #stage .s-verdict.close { color:#b45309; }
+  #stage .s-verdict.miss { color:#b91c1c; }
   .dock { display:flex; gap:8px; padding:12px 0 4px; align-items:center; }
   #mic { width:46px; height:46px; border-radius:50%; border:none; background:var(--accent); color:#fff;
          font-size:19px; cursor:pointer; flex:none; }
@@ -75,12 +98,16 @@
       <option value="free">Free talk</option>
       <option value="rephrase">Rephrase (how do I say X)</option>
       <option value="drill">Drill (strict)</option>
+      <option value="roleplay">Roleplay (playbook)</option>
     </select>
+    <select id="playbook" hidden title="Playbook scene card"></select>
+    <button id="session-btn" title="Guided session: warm-up, voice drill, main set">Session</button>
     <button id="digest-btn" title="Weekly recurring-error digest">Digest</button>
   </header>
   <div id="log">
     <div class="hint">Tap the mic and talk, or type below. The tutor answers first, then shows feedback under the reply.</div>
   </div>
+  <div id="stage" hidden></div>
   <details id="rephr-hist" hidden>
     <summary>Rephrase history (this session)</summary>
     <div id="rephr-list"></div>
@@ -95,6 +122,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const log = $("log"), statusEl = $("status"), modeSel = $("mode"), micBtn = $("mic");
+const playbookSel = $("playbook"), sessionBtn = $("session-btn"), stageEl = $("stage");
 let history = [];            // [{role, content}] — last 8 sent per request
 let rephrHistory = [];       // [{professional, usage}] — session only, newest first
 let mediaStream = null, recorder = null, chunks = [];
@@ -103,6 +131,16 @@ fetch("/api/health").then(r => r.json()).then(h => {
   $("dot").classList.add(h.ollama ? "ok" : "bad");
   $("dot").title = JSON.stringify(h);
 }).catch(() => $("dot").classList.add("bad"));
+
+// v4: playbooks for roleplay
+fetch("/api/playbooks").then(r => r.json()).then(d => {
+  for (const p of (d.playbooks || [])) {
+    const o = document.createElement("option");
+    o.value = p.id; o.textContent = p.title;
+    playbookSel.appendChild(o);
+  }
+}).catch(() => {});
+modeSel.addEventListener("change", () => { playbookSel.hidden = modeSel.value !== "roleplay"; });
 
 function bubble(cls, text) {
   const d = document.createElement("div");
@@ -240,9 +278,13 @@ async function sendText(text) {
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, mode, history: history.slice(-8) })
+      body: JSON.stringify({
+        text, mode, history: history.slice(-8),
+        playbook: mode === "roleplay" ? playbookSel.value : ""
+      })
     });
     if (!r.ok) throw new Error("chat failed (" + r.status + ")");
+    if (session && session.stage === "main") session.turns++;
     const data = await r.json();
     const { reply, corrections, rephrase } = data;
     history.push({ role: "assistant", content: reply });
@@ -282,6 +324,13 @@ async function sendText(text) {
 
 micBtn.onclick = async () => {
   if (recorder && recorder.state === "recording") { recorder.stop(); return; }
+  await toggleRecord(micBtn, text => { if (text) { $("text").value = text; sendText(text); } });
+};
+
+// v4: shared record-once helper — used by the main mic AND the session stages.
+// One active recording at a time; second tap stops it. onDone("") = silence or error.
+async function toggleRecord(btn, onDone) {
+  if (recorder && recorder.state === "recording") { recorder.stop(); return; }
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch {
@@ -293,38 +342,246 @@ micBtn.onclick = async () => {
   recorder.ondataavailable = e => chunks.push(e.data);
   recorder.onstop = async () => {
     mediaStream.getTracks().forEach(t => t.stop());
+    if (btn) btn.classList.remove("rec");
     micBtn.classList.remove("rec");
     setBusy("Transcribing...");
+    let text = "";
     try {
       const blob = new Blob(chunks, { type: (chunks[0] && chunks[0].type) || "audio/webm" });
       const fd = new FormData();
       fd.append("file", blob, "speech.webm");
       const r = await fetch("/api/transcribe", { method: "POST", body: fd });
       if (!r.ok) throw new Error("transcribe failed (" + r.status + ")");
-      const { text } = await r.json();
-      if (!text) { setBusy("Heard nothing — try again a bit louder."); return; }
-      $("text").value = text;
-      sendText(text);
+      text = (await r.json()).text || "";
+      if (!text) setBusy("Heard nothing — try again a bit louder.");
     } catch (e) {
       setBusy("Transcription failed: " + e.message);
     }
+    onDone(text);
   };
   recorder.start();
-  micBtn.classList.add("rec");
-  setBusy("Recording... tap the mic again to stop.");
-};
+  if (btn) btn.classList.add("rec");
+  setBusy("Recording... tap again to stop.");
+}
 
 $("send").onclick = () => { const t = $("text").value; $("text").value = ""; sendText(t); };
 $("text").addEventListener("keydown", e => {
   if (e.key === "Enter") { const t = $("text").value; $("text").value = ""; sendText(t); }
 });
 
-// Test hook for headless UI checks: ?demo=drill|rephrase|free auto-runs one real turn.
+$("session-btn").onclick = startSession;
+
+// v4: guided daily session — warm-up (review queue) -> voice drill -> main set -> cool-down.
+// Every stage is skippable; no streaks, no guilt. The flow bends to however much time exists.
+let session = null;
+
+function stageHead(title, note) {
+  const head = document.createElement("div"); head.className = "s-head";
+  const t = document.createElement("span"); t.className = "s-title"; t.textContent = title;
+  head.appendChild(t);
+  if (note) {
+    const n = document.createElement("span"); n.className = "s-note"; n.textContent = note;
+    head.appendChild(n);
+  }
+  return head;
+}
+
+async function startSession() {
+  if (session) { endSession(""); return; }
+  session = { stage: "warmup", queue: [], qi: 0, drill: [], di: 0, turns: 0, hits: 0, asked: 0 };
+  sessionBtn.classList.add("active");
+  sessionBtn.textContent = "End session";
+  try {
+    const r = await fetch("/api/review");
+    session.queue = (await r.json()).items || [];
+  } catch { session.queue = []; }
+  renderWarmup();
+}
+
+function endSession(summaryText) {
+  if (summaryText) bubble("tutor", summaryText);
+  session = null;
+  stageEl.hidden = true;
+  sessionBtn.classList.remove("active");
+  sessionBtn.textContent = "Session";
+  setBusy("");
+}
+
+function renderWarmup() {
+  stageEl.hidden = false;
+  stageEl.textContent = "";
+  stageEl.appendChild(stageHead("Warm-up — re-say it right", "from your correction log"));
+  if (!session.queue.length) {
+    const p = document.createElement("div"); p.className = "s-note";
+    p.textContent = "Nothing due for review yet (corrections resurface after 2 days) — jumping to the voice drill.";
+    stageEl.appendChild(p);
+    const btns = document.createElement("div"); btns.className = "s-btns";
+    const next = document.createElement("button"); next.className = "primary"; next.textContent = "Continue";
+    next.onclick = startDrill;
+    btns.appendChild(next);
+    stageEl.appendChild(btns);
+    return;
+  }
+  renderWarmupItem();
+}
+
+function renderWarmupItem() {
+  stageEl.textContent = "";
+  stageEl.appendChild(stageHead(`Warm-up ${session.qi + 1}/${session.queue.length} — re-say it right`));
+  const item = session.queue[session.qi];
+  const said = document.createElement("div"); said.className = "s-item";
+  const lbl = document.createElement("span"); lbl.textContent = "You previously said: ";
+  const s = document.createElement("s"); s.textContent = item.original;
+  said.append(lbl, s);
+  stageEl.appendChild(said);
+  const btns = document.createElement("div"); btns.className = "s-btns";
+  const rec = document.createElement("button"); rec.className = "primary"; rec.textContent = "Record your fix";
+  rec.onclick = () => toggleRecord(rec, text => scoreAndLog(item, text));
+  const skip = document.createElement("button"); skip.textContent = "Skip";
+  skip.onclick = () => { session.qi++; nextWarmup(); };
+  btns.append(rec, skip);
+  stageEl.appendChild(btns);
+}
+
+async function scoreAndLog(item, text) {
+  if (!text) { renderWarmupItem(); return; }  // silence or error — let him retry
+  setBusy("Scoring...");
+  let v = { verdict: "miss", ratio: 0 };
+  try {
+    const r = await fetch("/api/drill/score", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected: item.corrected, heard: text })
+    });
+    v = await r.json();
+  } catch { /* fall through with miss */ }
+  const verdict = document.createElement("div"); verdict.className = "s-item";
+  const sp = document.createElement("span"); sp.className = "s-verdict " + v.verdict;
+  sp.textContent = (v.verdict === "hit" ? "Nailed it" : v.verdict === "close" ? "Close" : "Not quite")
+    + " (" + v.ratio + ")";
+  verdict.appendChild(sp);
+  if (v.verdict !== "hit") {
+    const fix = document.createElement("div"); fix.className = "s-note";
+    fix.textContent = "Target: " + item.corrected;
+    verdict.appendChild(fix);
+  }
+  stageEl.appendChild(verdict);
+  session.asked++; if (v.verdict === "hit") session.hits++;
+  fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ correction_id: item.id, recall: v.verdict === "hit" ? "hit" : "miss" })
+  }).catch(() => {});
+  setBusy("");
+  session.qi++;
+  setTimeout(nextWarmup, 1500);
+}
+
+function nextWarmup() {
+  if (session.qi >= session.queue.length) startDrill();
+  else renderWarmupItem();
+}
+
+async function startDrill() {
+  session.stage = "drill";
+  const pb = modeSel.value === "roleplay" ? playbookSel.value : "";
+  try {
+    const r = await fetch("/api/drill/phrases" + (pb ? "?playbook=" + encodeURIComponent(pb) : ""));
+    const d = await r.json();
+    session.drill = d.phrases || [];
+    session.drillSource = d.source || "";
+  } catch { session.drill = []; }
+  if (!session.drill.length) { renderMain(); return; }
+  session.di = 0;
+  renderDrill();
+}
+
+function renderDrill() {
+  stageEl.hidden = false;
+  stageEl.textContent = "";
+  stageEl.appendChild(stageHead(`Voice drill ${session.di + 1}/${session.drill.length}`,
+    "listen, then repeat — " + session.drillSource));
+  const phrase = document.createElement("div"); phrase.className = "s-item";
+  phrase.textContent = "\u201c" + session.drill[session.di] + "\u201d";
+  stageEl.appendChild(phrase);
+  const btns = document.createElement("div"); btns.className = "s-btns";
+  const play = document.createElement("button"); play.textContent = "Play it";
+  play.onclick = async () => {
+    const t = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: session.drill[session.di] }) });
+    if (t.ok) {
+      try { new Audio(URL.createObjectURL(await t.blob())).play(); }
+      catch { setBusy("Audio blocked by the browser."); }
+    }
+  };
+  const rec = document.createElement("button"); rec.className = "primary"; rec.textContent = "Repeat it";
+  rec.onclick = () => toggleRecord(rec, text => scoreDrill(text));
+  const skip = document.createElement("button"); skip.textContent = "Skip";
+  skip.onclick = () => { session.di++; nextDrill(); };
+  btns.append(play, rec, skip);
+  stageEl.appendChild(btns);
+}
+
+async function scoreDrill(text) {
+  if (!text) { renderDrill(); return; }
+  setBusy("Scoring...");
+  let v = { verdict: "miss", ratio: 0 };
+  try {
+    const r = await fetch("/api/drill/score", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected: session.drill[session.di], heard: text })
+    });
+    v = await r.json();
+  } catch { /* fall through with miss */ }
+  const verdict = document.createElement("div"); verdict.className = "s-item";
+  const sp = document.createElement("span"); sp.className = "s-verdict " + v.verdict;
+  sp.textContent = (v.verdict === "hit" ? "Clean" : v.verdict === "close" ? "Almost" : "Try again")
+    + " (" + v.ratio + ")";
+  verdict.appendChild(sp);
+  stageEl.appendChild(verdict);
+  setBusy("");
+  session.di++;
+  setTimeout(nextDrill, 1500);
+}
+
+function nextDrill() {
+  if (session.di >= session.drill.length) renderMain();
+  else renderDrill();
+}
+
+function renderMain() {
+  session.stage = "main";
+  stageEl.hidden = false;
+  stageEl.textContent = "";
+  stageEl.appendChild(stageHead("Main set — talk", "3-5 turns, any mode (roleplay uses the selected playbook)"));
+  const note = document.createElement("div"); note.className = "s-note";
+  note.textContent = "Use the mic or the text box below as usual — your turns are counted here.";
+  stageEl.appendChild(note);
+  const btns = document.createElement("div"); btns.className = "s-btns";
+  const done = document.createElement("button"); done.className = "primary"; done.textContent = "Finish session";
+  done.onclick = finishSession;
+  btns.appendChild(done);
+  stageEl.appendChild(btns);
+}
+
+function finishSession() {
+  const turns = session.turns;
+  const asked = session.asked, hits = session.hits;
+  const summary = "Session logged: " + turns + " conversation turn" + (turns === 1 ? "" : "s") +
+    (asked ? ", warm-up recall " + hits + "/" + asked : "") +
+    ". The Sunday digest picks this up automatically.";
+  endSession(summary);
+}
+
+// Test hook for headless UI checks: ?demo=<mode> auto-runs one real turn / stage.
 // Never activates without the explicit query param, so normal use is unaffected.
 const demo = new URLSearchParams(location.search).get("demo");
 if (demo) {
   if (demo === "digest") {
     setTimeout(loadDigest, 300);
+  } else if (demo === "session") {
+    setTimeout(startSession, 300);
+  } else if (demo === "roleplay") {
+    modeSel.value = "roleplay";
+    playbookSel.hidden = false;
+    setTimeout(() => sendText("Thanks for taking the time to meet with me today. I'll keep this to ten minutes — sound good?"), 800);
   } else {
     const lines = {
       drill: "Yesterday I go to office and meet my client, he is very happy about the report we finish last week.",

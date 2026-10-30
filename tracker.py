@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS corrections (
 );
 CREATE INDEX IF NOT EXISTS idx_corrections_ts ON corrections(ts);
 CREATE INDEX IF NOT EXISTS idx_corrections_tag ON corrections(tag);
+CREATE TABLE IF NOT EXISTS reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  correction_id INTEGER NOT NULL REFERENCES corrections(id),
+  ts TEXT NOT NULL,
+  recall TEXT NOT NULL CHECK(recall IN ('hit','miss'))
+);
+CREATE INDEX IF NOT EXISTS idx_reviews_correction ON reviews(correction_id);
 """
 
 
@@ -73,6 +80,73 @@ def log_turn(mode: str, student_text: str, reply_text: str, corrections: list[di
         return False
 
 
+def review_queue(limit: int = 3) -> list[dict]:
+    """Corrections due for re-test: aged >= 2 days, not retired (last 2 reviews both hits).
+
+    Feeds the warm-up stage; the same reviews data feeds the digest recall-rate.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(timespec="seconds")
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT c.id, c.original, c.corrected, c.tag, c.explanation, c.ts,
+                   (SELECT COUNT(*) FROM reviews r WHERE r.correction_id = c.id
+                      AND r.recall = 'miss') AS misses,
+                   (SELECT MAX(r2.ts) FROM reviews r2 WHERE r2.correction_id = c.id) AS last_review
+            FROM corrections c
+            WHERE c.ts <= :cutoff
+              AND (SELECT GROUP_CONCAT(recall) FROM (
+                     SELECT recall FROM reviews WHERE correction_id = c.id
+                     ORDER BY id DESC LIMIT 2
+                   )) IS NOT 'hit,hit'
+            ORDER BY (SELECT MAX(r2.ts) FROM reviews r2 WHERE r2.correction_id = c.id) IS NULL DESC,
+                     misses DESC, c.ts ASC
+            LIMIT :limit
+            """,
+            {"cutoff": cutoff, "limit": limit},
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def record_review(correction_id: int, recall: str) -> bool:
+    """Log one re-test result. Returns False (never raises) on bad input or DB failure."""
+    if recall not in ("hit", "miss"):
+        return False
+    try:
+        conn = _conn()
+        try:
+            if not conn.execute("SELECT 1 FROM corrections WHERE id = ?", (correction_id,)).fetchone():
+                return False
+            conn.execute(
+                "INSERT INTO reviews(correction_id, ts, recall) VALUES(?,?,?)",
+                (correction_id, datetime.now(timezone.utc).isoformat(timespec="seconds"), recall),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception as exc:
+        print(f"[tracker] review log failed: {exc}", flush=True)
+        return False
+
+
+def recent_corrected(days: int = 7, limit: int = 5) -> list[str]:
+    """Corrected phrases from recent turns — the drill stage's fallback phrase source."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT corrected FROM corrections WHERE ts >= ? ORDER BY id DESC LIMIT ?",
+            (since, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [r["corrected"] for r in rows]
+
+
 def week_summary(days: int = 7) -> dict:
     """Deterministic aggregation: turns, total corrections, top tags with examples."""
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
@@ -89,6 +163,11 @@ def week_summary(days: int = 7) -> dict:
             " FROM corrections WHERE ts >= ? GROUP BY tag ORDER BY n DESC LIMIT 4",
             (since,),
         ).fetchall()
+        rv = conn.execute(
+            "SELECT SUM(recall = 'hit') AS hits, COUNT(*) AS total"
+            " FROM reviews WHERE ts >= ?",
+            (since,),
+        ).fetchone()
     finally:
         conn.close()
     top = [
@@ -104,6 +183,7 @@ def week_summary(days: int = 7) -> dict:
         "turns": turns,
         "corrections": total,
         "top_tags": top,
+        "reviews": {"hits": int(rv["hits"] or 0), "total": int(rv["total"] or 0)},
     }
 
 

@@ -36,6 +36,24 @@ The Digest button aggregates the last 7 days with SQL (deterministic tag counts 
 never counts), then the LLM writes per-pattern advice and 2-3 focus items. DB failures
 never block tutoring.
 
+## Playbooks + roleplay (v4)
+
+playbooks/*.md are short scene cards distilled from roleplay material. Pick
+"Roleplay" in the mode dropdown, choose a card, and the tutor plays the counterpart while you
+deliver your real script lines — with the usual gentle corrections, all logged to the tracker.
+
+## Daily session flow (v4)
+
+The Session button walks: Warm-up (re-say corrections aged 2+ days; two consecutive hits
+retire an item) -> Voice drill (listen to a phrase, repeat it, scored by text similarity —
+a proxy, not phoneme accuracy) -> Main set (3-5 conversation/roleplay turns) -> summary.
+Every stage is skippable; no streaks, no guilt.
+
+## Weekly digest cron (v4)
+
+scripts/weekly_digest.sh (Sundays 19:00 via Hermes cron) ensures the server is up, fetches
+/api/digest, and writes a markdown note to ~/Documents/Obsidian-Vault/english-tutor/.
+
 ## Smoke test (server must be running)
 
     ~/venvs/english-tutor/bin/python scripts/smoke_test.py

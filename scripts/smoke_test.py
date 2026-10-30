@@ -125,8 +125,77 @@ async def main() -> None:
     for t in dg["top_tags"]:
         print(f"  [{t['tag']}] x{t['count']}: {t.get('advice', '')[:110]}")
     print(f"  focus: {dg['focus']}")
+    assert "reviews" in dg, "digest missing reviews block (v4)"
 
-    # 8. voice for the reply
+    # 8. playbooks + roleplay turn (scene card injected into the system prompt)
+    r = requests.get(f"{URL}/api/playbooks", timeout=10)
+    r.raise_for_status()
+    pbs = r.json()["playbooks"]
+    print(f"playbooks: {[p['id'] for p in pbs]}")
+    assert len(pbs) >= 2, "expected at least 2 scene cards"
+    t0 = time.perf_counter()
+    r = requests.post(f"{URL}/api/chat", json={
+        "text": ("Thanks for taking the time to meet with me today. "
+                 "I'll keep this to ten minutes — sound good?"),
+        "mode": "roleplay", "playbook": pbs[0]["id"]}, timeout=300)
+    r.raise_for_status()
+    rp = r.json()
+    print(f"chat(roleplay): server={rp['elapsed_s']}s roundtrip={time.perf_counter() - t0:.2f}s")
+    print("  in-character:", rp["reply"][:160])
+    for key in ("reply", "corrections", "rephrase"):
+        assert key in rp, f"roleplay missing key: {key}"
+    r = requests.post(f"{URL}/api/chat", json={"text": "x", "mode": "roleplay", "playbook": "nope"},
+                      timeout=30)
+    assert r.status_code == 404, f"unknown playbook should 404, got {r.status_code}"
+
+    # 9. review queue: aging + retirement (backdated row seeded via tracker)
+    from datetime import datetime, timedelta, timezone
+
+    import tracker as tracker_mod
+
+    conn = tracker_mod._conn()
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat(timespec="seconds")
+    cur = conn.execute(
+        "INSERT INTO turns(ts,mode,student_text,reply,n_corrections) VALUES(?,?,?,?,?)",
+        (old_ts, "drill", "seed turn", "seed reply", 1))
+    cid = conn.execute(
+        "INSERT INTO corrections(turn_id,ts,original,corrected,tag,explanation) VALUES(?,?,?,?,?,?)",
+        (cur.lastrowid, old_ts, "I go to office yesterday", "I went to the office yesterday",
+         "tense", "seed for review-queue test")).lastrowid
+    conn.commit()
+    conn.close()
+    items = requests.get(f"{URL}/api/review", timeout=10).json()["items"]
+    assert any(i["id"] == cid for i in items), "backdated correction should be due for review"
+    print(f"review queue: {len(items)} due (backdated seed present)")
+    requests.post(f"{URL}/api/review", json={"correction_id": cid, "recall": "hit"}, timeout=10)
+    items = requests.get(f"{URL}/api/review", timeout=10).json()["items"]
+    assert any(i["id"] == cid for i in items), "one hit must NOT retire the item"
+    requests.post(f"{URL}/api/review", json={"correction_id": cid, "recall": "hit"}, timeout=10)
+    items = requests.get(f"{URL}/api/review", timeout=10).json()["items"]
+    assert not any(i["id"] == cid for i in items), "two consecutive hits must retire the item"
+    print("review retirement: PASS (queued -> 1 hit keeps -> 2 hits retires)")
+
+    # 10. drill scoring (text-similarity proxy, not phonemes)
+    r = requests.post(f"{URL}/api/drill/score", json={
+        "expected": "I went to the office yesterday",
+        "heard": "I went to the office yesterday"}, timeout=10)
+    assert r.json()["verdict"] == "hit", "exact match should hit"
+    r = requests.post(f"{URL}/api/drill/score", json={
+        "expected": "I went to the office yesterday",
+        "heard": "completely unrelated words here"}, timeout=10)
+    assert r.json()["verdict"] == "miss", "garbage should miss"
+    print("drill score: PASS (hit + miss)")
+
+    # 11. drill phrases (playbook key phrases; fallback = recent corrections)
+    r = requests.get(f"{URL}/api/drill/phrases?playbook={pbs[0]['id']}", timeout=10)
+    r.raise_for_status()
+    dp = r.json()
+    assert dp["phrases"] and dp["source"].startswith("playbook:"), f"unexpected: {dp}"
+    r = requests.get(f"{URL}/api/drill/phrases", timeout=10)
+    assert "phrases" in r.json(), "fallback phrase source missing"
+    print(f"drill phrases: {len(dp['phrases'])} from {dp['source']}")
+
+    # 12. voice for the reply
     t0 = time.perf_counter()
     r = requests.post(f"{URL}/api/tts", json={"text": free["reply"]}, timeout=120)
     r.raise_for_status()
