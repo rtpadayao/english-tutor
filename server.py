@@ -36,6 +36,7 @@ def _load_env() -> None:
 _load_env()
 
 import asr  # noqa: E402  (import after .env load)
+import tracker  # noqa: E402
 import tutor  # noqa: E402
 import tts  # noqa: E402
 
@@ -90,12 +91,24 @@ def chat(body: ChatIn):
         result, elapsed = tutor.reply(body.text, body.mode, body.history)
     except Exception as exc:
         raise HTTPException(500, f"tutor failed: {exc}") from exc
+    # v3: persist turn + corrections (log_turn never raises — DB failure can't break tutoring)
+    tracker.log_turn(body.mode, body.text, result["reply"], result["corrections"])
     return {
         "reply": result["reply"],
         "corrections": result["corrections"],
         "rephrase": result["rephrase"],
         "elapsed_s": round(elapsed, 2),
     }
+
+
+@app.get("/api/digest")
+def digest(days: int = 7):
+    """Weekly recurring-error digest: deterministic SQL tag counts + LLM advice/focus."""
+    days = max(1, min(days, 31))
+    try:
+        return tracker.build_digest(days)
+    except Exception as exc:
+        raise HTTPException(500, f"digest failed: {exc}") from exc
 
 
 @app.post("/api/tts")

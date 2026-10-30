@@ -29,6 +29,13 @@ Prereqs: Ollama running on :11434 with `qwen3.5:9b` pulled; internet for edge-tt
                  grammar|tense|preposition|article|word-choice|register|spelling|other
     rephrase:    {professional, variants[], usage} — filled in rephrase mode only
 
+## Mistake tracker (v3)
+
+Every tutor turn + its corrections are logged to data/tutor.db (SQLite, gitignored — private).
+The Digest button aggregates the last 7 days with SQL (deterministic tag counts — the LLM
+never counts), then the LLM writes per-pattern advice and 2-3 focus items. DB failures
+never block tutoring.
+
 ## Smoke test (server must be running)
 
     ~/venvs/english-tutor/bin/python scripts/smoke_test.py

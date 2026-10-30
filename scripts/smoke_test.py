@@ -109,7 +109,24 @@ async def main() -> None:
     assert rp["professional"], "rephrase.professional empty"
     assert rp["variants"], "rephrase.variants empty"
 
-    # 7. voice for the reply
+    # 7. weekly digest (deterministic SQL counts + LLM advice) — proves persistence too
+    t0 = time.perf_counter()
+    r = requests.get(f"{URL}/api/digest", timeout=300)
+    r.raise_for_status()
+    dg = r.json()
+    print(f"digest: roundtrip={time.perf_counter() - t0:.2f}s turns={dg['turns']} "
+          f"corrections={dg['corrections']} "
+          f"top_tags={[(t['tag'], t['count']) for t in dg['top_tags']]}")
+    assert dg["turns"] >= 3, "digest should see at least the 3 smoke turns"
+    assert dg["corrections"] >= 2, "digest should see the drill corrections"
+    assert dg["top_tags"], "top_tags empty"
+    assert any(t.get("advice") for t in dg["top_tags"]), "LLM advice missing for top tags"
+    assert dg["focus"], "focus list empty"
+    for t in dg["top_tags"]:
+        print(f"  [{t['tag']}] x{t['count']}: {t.get('advice', '')[:110]}")
+    print(f"  focus: {dg['focus']}")
+
+    # 8. voice for the reply
     t0 = time.perf_counter()
     r = requests.post(f"{URL}/api/tts", json={"text": free["reply"]}, timeout=120)
     r.raise_for_status()

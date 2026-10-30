@@ -33,7 +33,9 @@ Field rules:
   use the word "Corrections" there.
 - corrections: ONLY real errors or clearly awkward phrasing he actually produced. Each item:
   original = the exact phrase he said (short quote), corrected = the better version,
-  tag = one of grammar|tense|preposition|article|word-choice|register|spelling|other,
+  tag = one of grammar|tense|preposition|article|word-choice|register|spelling|other —
+  prefer the MOST SPECIFIC tag that fits (tense for verb forms, article for a/an/the,
+  preposition for in/on/at/to, word-choice for vocabulary); use "other" ONLY when none fit.
   explanation = ONE short sentence with the reason.
   * free mode: at most 3 items; if there are none, use an empty list.
   * drill mode: list EVERY error, including small ones (articles, prepositions, tense,
@@ -90,6 +92,27 @@ SCHEMA = {
         },
     },
     "required": ["reply", "corrections", "rephrase"],
+}
+
+# v3: weekly digest — the LLM writes advice/focus; tag COUNTS come from SQL, not the model.
+# Patterns are merged by ROW NUMBER, not by the LLM echoing tag names (models mangle keys).
+DIGEST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "patterns": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "row": {"type": "integer"},
+                    "advice": {"type": "string"},
+                },
+                "required": ["row", "advice"],
+            },
+        },
+        "focus": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["patterns", "focus"],
 }
 
 
@@ -154,6 +177,52 @@ def parse(content: str) -> dict:
     return {"reply": reply_text, "corrections": corrections, "rephrase": rephrase}
 
 
+def ollama_chat(messages: list[dict], schema: dict, num_predict: int = 420,
+                temperature: float = 0.6, timeout: int = 180) -> str:
+    """One schema-constrained Ollama call; returns raw content (caller parses/validates)."""
+    payload = {
+        "model": _cfg("OLLAMA_MODEL", "qwen3.5:9b"),
+        "messages": messages,
+        "stream": False,
+        # qwen3.5 is a thinking model: without this, tokens go to message.thinking
+        # and content comes back empty (matches Honcho's no-THINKING setup for this model).
+        "think": False,
+        # structured outputs — Ollama constrains generation to the schema.
+        "format": schema,
+        "keep_alive": "30m",
+        "options": {"temperature": temperature, "num_predict": num_predict},
+    }
+    req = urllib.request.Request(
+        _cfg("OLLAMA_URL", "http://localhost:11434") + "/api/chat",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.load(resp)
+    content = (data.get("message") or {}).get("content", "").strip()
+    if not content:
+        raise RuntimeError("Ollama returned an empty reply")
+    return content
+
+
+REPHRASE_HINT = (
+    "(This is a REPHRASE request. Your JSON MUST include a non-empty rephrase.professional — "
+    "the professional English version of the message above — plus 1-2 variants and a usage line.)"
+)
+DRILL_HINT = (
+    "(This is a DRILL exercise. Analyze the message above for grammar, tense, article, "
+    "preposition, and word-choice errors. Your JSON MUST list EVERY error you find in "
+    "corrections, each with a tag and a one-line reason. Only return an empty corrections "
+    "list if the text is already flawless English.)"
+)
+
+
+def _retry_once(messages: list[dict], text: str, hint: str) -> dict:
+    """One corrective retry: the demand moves into the user turn, temperature drops."""
+    retry_messages = messages[:-1] + [{"role": "user", "content": text + "\n\n" + hint}]
+    return parse(ollama_chat(retry_messages, SCHEMA, num_predict=420, temperature=0.3))
+
+
 def reply(text: str, mode: str = "free", history: list[dict] | None = None) -> tuple[dict, float]:
     """Return ({reply, corrections, rephrase}, elapsed_seconds) for one tutor turn."""
     messages = [{"role": "system", "content": PERSONA + MODE_ADDONS.get(mode, "")}]
@@ -162,26 +231,16 @@ def reply(text: str, mode: str = "free", history: list[dict] | None = None) -> t
             messages.append({"role": turn["role"], "content": str(turn["content"])[:2000]})
     messages.append({"role": "user", "content": text})
 
-    payload = {
-        "model": _cfg("OLLAMA_MODEL", "qwen3.5:9b"),
-        "messages": messages,
-        "stream": False,
-        # qwen3.5 is a thinking model: without this, tokens go to message.thinking
-        # and content comes back empty (matches Honcho's no-THINKING setup for this model).
-        "think": False,
-        # v2: structured outputs — Ollama constrains generation to SCHEMA.
-        "format": SCHEMA,
-        "keep_alive": "30m",
-        # 420 (was 320): JSON keys/brackets add token overhead.
-        "options": {"temperature": 0.6, "num_predict": 420},
-    }
-    req = urllib.request.Request(
-        _cfg("OLLAMA_URL", "http://localhost:11434") + "/api/chat",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
     start = time.perf_counter()
-    with urllib.request.urlopen(req, timeout=180) as resp:
-        data = json.load(resp)
-    content = (data.get("message") or {}).get("content", "").strip()
-    return parse(content), time.perf_counter() - start
+    result = parse(ollama_chat(messages, SCHEMA, num_predict=420))
+    # Hard mode contracts are enforced by RETRY, not by prompt alone — a 9B model at
+    # temperature 0.6 occasionally ignores mode instructions. The retry moves the demand
+    # into the user turn at lower temperature and costs latency only when violated.
+    if mode == "rephrase" and not result["rephrase"]["professional"]:
+        print("[tutor] rephrase contract violated — retrying once", flush=True)
+        result = _retry_once(messages, text, REPHRASE_HINT)
+    if mode == "drill" and not result["corrections"]:
+        # A clean drill input pays one wasted retry (a few seconds); an erroneous one gets fixed.
+        print("[tutor] drill returned no corrections — retrying once", flush=True)
+        result = _retry_once(messages, text, DRILL_HINT)
+    return result, time.perf_counter() - start
