@@ -12,7 +12,8 @@ Design rule: ASR and TTS run on CPU; the 8 GB VRAM is reserved for the LLM.
     python3 -m venv ~/venvs/english-tutor
     ~/venvs/english-tutor/bin/pip install -r requirements.txt
     cp .env.example .env
-    ~/venvs/english-tutor/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8770
+    scripts/start.sh    # pid file + logs/tutor.log + health check; stop: scripts/stop.sh
+    # or manually: ~/venvs/english-tutor/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8770
     # open http://127.0.0.1:8770
 
 Prereqs: Ollama running on :11434 with `qwen3.5:9b` pulled; internet for edge-tts.

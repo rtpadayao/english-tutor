@@ -4,19 +4,52 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>English Tutor</title>
+<meta name="description" content="Local voice-first English tutor for professional practice.">
+<meta name="theme-color" content="#f6f7f9">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/static/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+<script>
+  // Theme before first paint: saved choice wins, else system preference.
+  (function () {
+    try {
+      var t = localStorage.getItem("et-theme");
+      var dark = t === "dark" || (!t && matchMedia("(prefers-color-scheme: dark)").matches);
+      if (dark) {
+        document.documentElement.classList.add("dark");
+        var m = document.querySelector('meta[name="theme-color"]');
+        if (m) m.content = "#10141b";
+      }
+    } catch (e) {}
+  })();
+</script>
 <style>
   :root {
     --bg:#f6f7f9; --card:#ffffff; --ink:#1a2233; --muted:#5b6472;
     --line:#e3e7ee; --accent:#2563eb; --warn-bg:#fff7e6; --warn-ink:#7a5200;
+    --field:#ffffff; --hover:#f0f4f8; --tutor-bubble:#eef2f7;
+    --warn-line:#eab308; --tag-bg:#f2e3b3; --tag-ink:#7a5200;
+    --rephr-bg:#eaf3ff; --ok-bg:#eef8ef; --ok-line:#22a06b;
+    --dot-idle:#c3c9d2; --send-bg:#1a2233; --send-ink:#ffffff; --icon-ink:#3c4657;
+    color-scheme: light;
+  }
+  html.dark {
+    --bg:#10141b; --card:#181d27; --ink:#e7ebf3; --muted:#94a0b4;
+    --line:#2a3140; --accent:#4c8dff; --warn-bg:#2a2312; --warn-ink:#e6c565;
+    --field:#181d27; --hover:#212a38; --tutor-bubble:#1f2634;
+    --warn-line:#b98a1c; --tag-bg:#3d3315; --tag-ink:#e6c565;
+    --rephr-bg:#16233a; --ok-bg:#12241c; --ok-line:#2f9e6b;
+    --dot-idle:#3a4356; --send-bg:#e7ebf3; --send-ink:#10141b; --icon-ink:#c8d2e2;
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
   body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); }
   .wrap { max-width:780px; margin:0 auto; padding:16px; display:flex; flex-direction:column; height:100vh; }
   header { display:flex; align-items:center; gap:12px; padding:6px 4px 14px; }
   header h1 { font-size:18px; margin:0 auto 0 0; }
-  .dot { width:10px; height:10px; border-radius:50%; background:#c3c9d2; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--dot-idle); }
   .dot.ok { background:#22c55e; } .dot.bad { background:#ef4444; }
-  select { padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; font-size:13px; }
+  select { padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:var(--field); color:var(--ink); font-size:13px; }
   #playbook { max-width:240px; }
   header h1 { flex:none; }
   #log { flex:1; overflow-y:auto; border:1px solid var(--line); border-radius:12px; background:var(--card);
@@ -24,19 +57,19 @@
   .msg { margin:10px 0; max-width:86%; padding:10px 14px; border-radius:12px; white-space:pre-wrap;
          line-height:1.5; font-size:14.5px; }
   .me { margin-left:auto; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
-  .tutor { background:#eef2f7; border-bottom-left-radius:4px; }
+  .tutor { background:var(--tutor-bubble); border-bottom-left-radius:4px; }
   .hint { color:var(--muted); font-size:12.5px; text-align:center; margin:10px 0; }
   /* corrections panel (v2) */
-  .corr { background:var(--warn-bg); color:var(--warn-ink); border-left:3px solid #eab308;
+  .corr { background:var(--warn-bg); color:var(--warn-ink); border-left:3px solid var(--warn-line);
           border-bottom-left-radius:4px; font-size:13.5px; }
   .c-head { font-size:11.5px; text-transform:uppercase; letter-spacing:.4px; margin-bottom:6px; opacity:.85; }
   .c-item { margin:9px 0; }
-  .c-tag { display:inline-block; font-size:10.5px; text-transform:uppercase; background:#f2e3b3;
-           color:#7a5200; border-radius:4px; padding:1px 6px; margin-right:6px; }
+  .c-tag { display:inline-block; font-size:10.5px; text-transform:uppercase; background:var(--tag-bg);
+           color:var(--tag-ink); border-radius:4px; padding:1px 6px; margin-right:6px; }
   .c-line s { opacity:.75; }
   .c-why { font-size:12.5px; opacity:.85; margin-top:2px; }
   /* rephrase panel (v2) */
-  .rephr { background:#eaf3ff; border-left:3px solid var(--accent); border-bottom-left-radius:4px; }
+  .rephr { background:var(--rephr-bg); border-left:3px solid var(--accent); border-bottom-left-radius:4px; }
   .r-label { font-size:11px; text-transform:uppercase; letter-spacing:.4px; opacity:.7; margin:7px 0 2px; }
   .r-label:first-child { margin-top:0; }
   .r-main { font-size:15px; font-weight:600; }
@@ -47,21 +80,21 @@
   #rephr-hist .h-item { margin:5px 0 5px 12px; line-height:1.45; }
   #rephr-hist .h-item b { color:var(--ink); font-weight:600; }
   /* weekly digest panel (v3) */
-  .digest { background:#eef8ef; border-left:3px solid #22a06b; border-bottom-left-radius:4px; }
+  .digest { background:var(--ok-bg); border-left:3px solid var(--ok-line); border-bottom-left-radius:4px; }
   .d-head { font-size:11.5px; text-transform:uppercase; letter-spacing:.4px; margin-bottom:6px; opacity:.85; }
   .d-row { margin:8px 0; font-size:13.5px; }
   .d-count { font-weight:600; }
   .d-advice { font-size:12.5px; opacity:.9; margin-top:2px; }
   .d-focus { margin:6px 0 0; padding-left:18px; }
   .d-focus li { margin:3px 0; font-size:13px; }
-  #digest-btn { padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:#fff;
+  #digest-btn { padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card);
                 color:var(--ink); font-size:13px; cursor:pointer; }
-  #digest-btn:hover { background:#f0f4f8; }
+  #digest-btn:hover { background:var(--hover); }
   /* playbooks + session flow (v4) */
-  #session-btn { padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:#fff;
+  #session-btn { padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card);
                  color:var(--ink); font-size:13px; cursor:pointer; }
-  #session-btn:hover { background:#f0f4f8; }
-  #session-btn.active { background:#eef8ef; border-color:#22a06b; }
+  #session-btn:hover { background:var(--hover); }
+  #session-btn.active { background:var(--ok-bg); border-color:var(--ok-line); }
   #stage { margin:8px 0 0; border:1px solid var(--line); border-radius:12px; background:var(--card);
            padding:12px 14px; box-shadow:0 1px 3px rgba(16,24,40,.06); font-size:13.5px; }
   #stage .s-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
@@ -70,7 +103,7 @@
   #stage .s-note { color:var(--muted); font-size:12.5px; }
   #stage .s-item { margin:6px 0; line-height:1.45; }
   #stage .s-btns { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
-  #stage button { padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:#fff;
+  #stage button { padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card);
                   color:var(--ink); font-size:12.5px; cursor:pointer; }
   #stage button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
   #stage button.rec { background:#ef4444; color:#fff; border-color:#ef4444; animation:pulse 1.2s infinite; }
@@ -83,9 +116,16 @@
          font-size:19px; cursor:pointer; flex:none; }
   #mic.rec { background:#ef4444; animation:pulse 1.2s infinite; }
   @keyframes pulse { 50% { opacity:.5; } }
-  #text { flex:1; padding:11px 14px; border:1px solid var(--line); border-radius:10px; font-size:14px; }
-  #send { padding:11px 18px; border:none; border-radius:10px; background:var(--ink); color:#fff;
+  #text { flex:1; padding:11px 14px; border:1px solid var(--line); border-radius:10px; font-size:14px;
+          background:var(--field); color:var(--ink); }
+  #send { padding:11px 18px; border:none; border-radius:10px; background:var(--send-bg); color:var(--send-ink);
           font-size:14px; cursor:pointer; }
+  /* header icon buttons (theme toggle + PWA install) */
+  .icon-btn { width:32px; height:32px; flex:none; display:inline-flex; align-items:center; justify-content:center;
+              border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--icon-ink);
+              cursor:pointer; padding:0; }
+  .icon-btn:hover { background:var(--hover); }
+  .icon-btn svg { width:17px; height:17px; }
   #status { color:var(--muted); font-size:12.5px; min-height:18px; padding:2px 4px; }
 </style>
 </head>
@@ -103,6 +143,13 @@
     <select id="playbook" hidden title="Playbook scene card"></select>
     <button id="session-btn" title="Guided session: warm-up, voice drill, main set">Session</button>
     <button id="digest-btn" title="Weekly recurring-error digest">Digest</button>
+    <button id="install-btn" class="icon-btn" title="Install app" aria-label="Install app" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 6v6"/><path d="m9 9 3 3 3-3"/>
+      </svg>
+    </button>
+    <button id="theme-btn" class="icon-btn" title="Switch theme" aria-label="Toggle dark mode"></button>
   </header>
   <div id="log">
     <div class="hint">Tap the mic and talk, or type below. The tutor answers first, then shows feedback under the reply.</div>
@@ -141,6 +188,44 @@ fetch("/api/playbooks").then(r => r.json()).then(d => {
   }
 }).catch(() => {});
 modeSel.addEventListener("change", () => { playbookSel.hidden = modeSel.value !== "roleplay"; });
+
+// ---- theme toggle: one icon, always showing the theme you'd switch to ----
+const themeBtn = $("theme-btn");
+const SUN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>';
+const MOON_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>';
+function isDark() { return document.documentElement.classList.contains("dark"); }
+function paintTheme() {
+  themeBtn.innerHTML = isDark() ? SUN_ICON : MOON_ICON;
+  const label = isDark() ? "Switch to light mode" : "Switch to dark mode";
+  themeBtn.title = label;
+  themeBtn.setAttribute("aria-label", label);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = isDark() ? "#10141b" : "#f6f7f9";
+}
+themeBtn.onclick = () => {
+  document.documentElement.classList.toggle("dark");
+  try { localStorage.setItem("et-theme", isDark() ? "dark" : "light"); } catch (e) {}
+  paintTheme();
+};
+paintTheme();
+
+// ---- PWA install: button appears only when the browser offers installation ----
+// Firefox never fires beforeinstallprompt - the button stays hidden there by design.
+const installBtn = $("install-btn");
+let installEvent = null;
+window.addEventListener("beforeinstallprompt", e => {
+  e.preventDefault();
+  installEvent = e;
+  installBtn.hidden = false;
+});
+installBtn.onclick = async () => {
+  if (!installEvent) return;
+  installEvent.prompt();
+  await installEvent.userChoice;
+  installEvent = null;
+  installBtn.hidden = true;
+};
+window.addEventListener("appinstalled", () => { installBtn.hidden = true; });
 
 function bubble(cls, text) {
   const d = document.createElement("div");

@@ -24,6 +24,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 BASE = Path(__file__).resolve().parent
@@ -50,6 +51,18 @@ import tutor  # noqa: E402
 import tts  # noqa: E402
 
 app = FastAPI(title="English Tutor", version="0.1.0")
+
+# PWA shell: icons + brand.svg under /static; manifest at root scope with the
+# right MIME (StaticFiles would guess octet-stream for .webmanifest).
+app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
+
+
+@app.get("/manifest.webmanifest")
+def webmanifest():
+    return FileResponse(
+        BASE / "static" / "manifest.webmanifest",
+        media_type="application/manifest+json",
+    )
 
 
 class ChatIn(BaseModel):
