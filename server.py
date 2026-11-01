@@ -86,7 +86,7 @@ def health():
     return {
         "ollama": tutor.ollama_ok(),
         "whisper": asr.status(),
-        "tts": "edge-tts",
+        "tts": tts.status(),
         "model": os.environ.get("OLLAMA_MODEL", "qwen3.5:9b"),
     }
 
@@ -199,7 +199,7 @@ async def tts_endpoint(body: TtsIn):
         audio = await tts.synthesize(body.text)
     except Exception as exc:
         raise HTTPException(502, f"tts failed: {exc}") from exc
-    return Response(audio, media_type="audio/mpeg")
+    return Response(audio, media_type=tts.LAST_MEDIA_TYPE)
 
 
 if __name__ == "__main__":

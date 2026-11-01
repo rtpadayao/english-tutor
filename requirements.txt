@@ -5,4 +5,5 @@ faster-whisper>=1.2.1
 # Pin: av>=15 dropped the metadata_errors kwarg faster-whisper 1.2.1 passes to av.open
 av==14.1.0
 edge-tts>=6.1
+piper-tts>=1.4  # local offline TTS (default provider); edge-tts remains the fallback
 requests>=2.31

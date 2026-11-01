@@ -4,7 +4,7 @@ Local, voice-first English tutor for professional / client English practice.
 Thin v1 built from scratch (design + repo audit: see Obsidian note
 `2026-10-30_english-ai-tutor_plan.md` in the vault).
 
-Stack: faster-whisper (small, int8, CPU) + Ollama qwen3.5:9b + edge-tts + FastAPI + one static page.
+Stack: faster-whisper (small, int8, CPU) + Ollama qwen3.5:9b + Piper TTS (local, default; edge-tts cloud fallback) + FastAPI + one static page.
 Design rule: ASR and TTS run on CPU; the 8 GB VRAM is reserved for the LLM.
 
 ## Run
@@ -16,7 +16,7 @@ Design rule: ASR and TTS run on CPU; the 8 GB VRAM is reserved for the LLM.
     # or manually: ~/venvs/english-tutor/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8770
     # open http://127.0.0.1:8770
 
-Prereqs: Ollama running on :11434 with `qwen3.5:9b` pulled; internet for edge-tts.
+Prereqs: Ollama running on :11434 with `qwen3.5:9b` pulled. The tutor voice is local (Piper, offline) — run `scripts/setup_piper.sh` once (internet needed only to download the voice). Set `TTS_PROVIDER=edge` in `.env` for the Microsoft cloud voice instead.
 
 ## Endpoints
 
@@ -24,7 +24,7 @@ Prereqs: Ollama running on :11434 with `qwen3.5:9b` pulled; internet for edge-tt
     GET  /api/health      component status
     POST /api/transcribe  multipart file=<audio> -> {text, elapsed_s}
     POST /api/chat        {text, mode, history} -> {reply, corrections, rephrase, elapsed_s}
-    POST /api/tts         {text}                -> audio/mpeg
+    POST /api/tts         {text}                -> audio/wav (piper) | audio/mpeg (edge)
 
     corrections: [{original, corrected, tag, explanation}] — tags:
                  grammar|tense|preposition|article|word-choice|register|spelling|other
