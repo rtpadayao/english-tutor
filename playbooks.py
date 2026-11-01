@@ -2,8 +2,7 @@
 
 A playbook is a short scene card: roles, goal, the student's real script lines, key_phrases
 for the drill stage, likely objections, success criteria. ONE card per session goes into the
-roleplay system prompt (capped) — no playbook manager, no RAG. Cards live in playbooks/*.md
-and are distilled from roleplay material.
+roleplay system prompt (capped) — no playbook manager, no RAG. Cards live in playbooks/*.md.
 """
 from pathlib import Path
 

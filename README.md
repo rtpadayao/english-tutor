@@ -39,7 +39,7 @@ never block tutoring.
 
 ## Playbooks + roleplay (v4)
 
-playbooks/*.md are short scene cards distilled from roleplay material. Pick
+playbooks/*.md are short roleplay scene cards. Pick
 "Roleplay" in the mode dropdown, choose a card, and the tutor plays the counterpart while you
 deliver your real script lines — with the usual gentle corrections, all logged to the tracker.
 
