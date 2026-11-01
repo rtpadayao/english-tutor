@@ -213,34 +213,63 @@ def build_digest(days: int = 7) -> dict:
         "- focus: 2-3 concrete practice actions for next week (specific: a drill to run, a"
         " phrase pattern to rehearse, or a client-call situation to practice)."
     )
-    try:
-        content = tutor_mod.ollama_chat(
-            [
-                {"role": "system",
-                 "content": "You answer ONLY with the JSON object described by the schema."},
-                {"role": "user", "content": prompt},
-            ],
-            tutor_mod.DIGEST_SCHEMA,
-            num_predict=380,
-            temperature=0.4,
-        )
-        parsed = json.loads(content)
-    except Exception as exc:
-        print(f"[tracker] digest LLM failed: {exc}", flush=True)
-        summary["focus"] = [
-            "(Digest advice unavailable this time — the counts above are still accurate.)"
-        ]
-        return summary
-
-    for p in parsed.get("patterns") or []:
-        if not isinstance(p, dict):
-            continue
+    # v5 hardening: qwen's pretty-printed digest JSON truncates at num_predict=380
+    # (probe: 4/5 runs cut mid-string at ~1.5k chars) and occasionally returns rows
+    # that don't map. Two layers: a cap that fits the real output size, and the v3
+    # retry pattern — the demand moves into the user turn at lower temperature, so
+    # latency is paid only while the contract is violated. Counts above are SQL-
+    # derived and never depend on the LLM.
+    row_hint = (
+        "\n\nIMPORTANT: patterns must contain EXACTLY one entry per Row listed above — "
+        f"row is that row's integer number (1..{len(summary['top_tags'])}) and advice is "
+        "one non-empty practical sentence referencing one of its examples."
+    )
+    last_focus: list[str] | None = None
+    attempts = 3
+    for attempt in range(1, attempts + 1):
         try:
-            idx = int(p.get("row")) - 1
-        except (TypeError, ValueError):
+            content = tutor_mod.ollama_chat(
+                [
+                    {"role": "system",
+                     "content": "You answer ONLY with the JSON object described by the schema."},
+                    {"role": "user", "content": prompt + (row_hint if attempt > 1 else "")},
+                ],
+                tutor_mod.DIGEST_SCHEMA,
+                num_predict=700,
+                temperature=0.4 if attempt == 1 else 0.3,
+            )
+            parsed = json.loads(content)
+        except Exception as exc:
+            print(f"[tracker] digest LLM attempt {attempt}/{attempts} failed: {exc}", flush=True)
             continue
-        if 0 <= idx < len(summary["top_tags"]):
-            summary["top_tags"][idx]["advice"] = str(p.get("advice") or "").strip()
-    focus = [str(f).strip() for f in (parsed.get("focus") or []) if str(f).strip()][:3]
-    summary["focus"] = focus or ["Keep running drills on the tags above."]
+
+        focus = [str(f).strip() for f in (parsed.get("focus") or []) if str(f).strip()][:3]
+        if focus:
+            last_focus = focus
+
+        mapped = 0
+        for p in parsed.get("patterns") or []:
+            if not isinstance(p, dict):
+                continue
+            try:
+                idx = int(p.get("row")) - 1
+            except (TypeError, ValueError):
+                continue
+            advice = str(p.get("advice") or "").strip()
+            if 0 <= idx < len(summary["top_tags"]) and advice:
+                summary["top_tags"][idx]["advice"] = advice
+                mapped += 1
+        summary["focus"] = focus or ["Keep running drills on the tags above."]
+        if mapped:
+            return summary
+        print(
+            f"[tracker] digest attempt {attempt}/{attempts}: "
+            f"0/{len(summary['top_tags'])} rows mapped",
+            flush=True,
+        )
+
+    # every attempt failed — counts stay accurate; keep the best focus we saw
+    summary["focus"] = last_focus or [
+        "(Digest advice unavailable this time — the counts above are still accurate.)"
+    ]
     return summary

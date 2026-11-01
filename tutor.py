@@ -243,7 +243,15 @@ def reply(text: str, mode: str = "free", history: list[dict] | None = None,
     messages.append({"role": "user", "content": text})
 
     start = time.perf_counter()
-    result = parse(ollama_chat(messages, SCHEMA, num_predict=420))
+    try:
+        result = parse(ollama_chat(messages, SCHEMA, num_predict=420))
+    except Exception as exc:
+        # Transient model-server hiccups (empty reply, connection blip, momentary
+        # VRAM pressure) must not surface as 500s — one retry at lower temperature
+        # converts the common single-shot failure into latency. A second genuine
+        # failure still raises (the 500 is then real).
+        print(f"[tutor] chat attempt 1 failed ({exc}) — retrying once", flush=True)
+        result = parse(ollama_chat(messages, SCHEMA, num_predict=420, temperature=0.3))
     # Hard mode contracts are enforced by RETRY, not by prompt alone — a 9B model at
     # temperature 0.6 occasionally ignores mode instructions. The retry moves the demand
     # into the user turn at lower temperature and costs latency only when violated.

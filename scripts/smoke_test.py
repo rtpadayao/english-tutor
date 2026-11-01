@@ -164,14 +164,19 @@ async def main() -> None:
          "tense", "seed for review-queue test")).lastrowid
     conn.commit()
     conn.close()
+    # The HTTP endpoint clamps its window (server.py caps limit at 10 — a UI choice)
+    # and ranks never-reviewed items first, so once the seed has ONE review it
+    # legitimately drops out of the top-10 when real practice data fills the queue.
+    # The contract under test — 1 hit keeps the item due, 2 consecutive hits retire
+    # it — lives in tracker.review_queue, so assert it there directly, unclamped.
     items = requests.get(f"{URL}/api/review", timeout=10).json()["items"]
     assert any(i["id"] == cid for i in items), "backdated correction should be due for review"
     print(f"review queue: {len(items)} due (backdated seed present)")
     requests.post(f"{URL}/api/review", json={"correction_id": cid, "recall": "hit"}, timeout=10)
-    items = requests.get(f"{URL}/api/review", timeout=10).json()["items"]
+    items = tracker_mod.review_queue(limit=50)
     assert any(i["id"] == cid for i in items), "one hit must NOT retire the item"
     requests.post(f"{URL}/api/review", json={"correction_id": cid, "recall": "hit"}, timeout=10)
-    items = requests.get(f"{URL}/api/review", timeout=10).json()["items"]
+    items = tracker_mod.review_queue(limit=50)
     assert not any(i["id"] == cid for i in items), "two consecutive hits must retire the item"
     print("review retirement: PASS (queued -> 1 hit keeps -> 2 hits retires)")
 
